@@ -13,21 +13,18 @@ import torch.nn as nn
 import torch.optim as optim
 from torchtext.data import Field, BucketIterator
 from torchtext.data.metrics import bleu_score
-from torchtext.datasets import WMT14, IWSLT
+# from torchtext.datasets import WMT14
 from nltk.translate.bleu_score import corpus_bleu
 
 from torchtext.datasets import Multi30k
 
-from dotproduct_models import Seq2Seq, Decoder, Encoder, Attention, init_weights
+from dotproduct_models_no_attention import Seq2Seq, Decoder, Encoder, Attention, init_weights
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--fixed', default=False, action='store_true')
 parser.add_argument('--normalized', default=False, action='store_true')
-parser.add_argument('--uniform', default=False, action='store_true')
 parser.add_argument('--cosine', default=False, action='store_true')
 parser.add_argument('--runname', type=str)
-parser.add_argument('--data', type=str, default='multi30k')
-parser.add_argument('--scale', type=int, default=100)
 
 parser.add_argument('--run_local', default=False, action='store_true')
 parser.add_argument('--cuda', type=int, default=0)
@@ -207,9 +204,9 @@ def translate_sentence(sentence, src_field, trg_field, model, device, max_len=50
         trg_tensor = torch.LongTensor([trg_indexes[-1]]).to(device)
 
         with torch.no_grad():
-            output, hidden, attention = model.decoder(trg_tensor, hidden, encoder_outputs, mask, args)
+            output, hidden, _ = model.decoder(trg_tensor, hidden, encoder_outputs, mask, args)
 
-        attentions[i] = attention
+        # attentions[i] = attention
 
         pred_token = output.argmax(1).item()
 
@@ -220,7 +217,7 @@ def translate_sentence(sentence, src_field, trg_field, model, device, max_len=50
 
     trg_tokens = [trg_field.vocab.itos[i] for i in trg_indexes]
 
-    return trg_tokens[1:], attentions[:len(trg_tokens) - 1]
+    return trg_tokens[1:], None
 
 
 def display_attention(sentence, translation, attention):
@@ -258,14 +255,9 @@ def get_embeddings(embedding_size, vocab_size, args):
                 v = np.random.randint(low=-100, high=100, size=embedding_size)
                 v = v / np.linalg.norm(v)
             else:
-                if args.uniform:
-                    if cls_idx == 0:
-                        print('NOTICE: embeddings range +-1 and UNnormalized for fixed- UNIFORM')
-                    v = np.random.uniform(low=-1, high=1, size=embedding_size)
-                else:
-                    if cls_idx == 0:
-                        print('NOTICE: embeddings range +-{} and UNnormalized for fixed'.format(args.scale))
-                    v = np.random.randint(low=-args.scale, high=args.scale, size=embedding_size)
+                if cls_idx == 0:
+                    print('NOTICE: embeddings range +-20 and UNnormalized for fixed')
+                v = np.random.randint(low=-20, high=20, size=embedding_size)
 
         word2vec_dictionary[cls_idx] = torch.from_numpy(v).float()
 
@@ -311,25 +303,9 @@ TRG = Field(tokenize=tokenize_en,
             lower=True)
 
 print('before: train_data, valid_data, test_data')
-if args.data == 'wmt14':
-    MAX_LEN = 50
-    data_path = '.data' if args.run_local else '/yoav_stg/gshalev/semantic_labeling/WMT14'
-    train_data, valid_data, test_data = WMT14.splits(exts=('.de', '.en'), fields=(SRC, TRG), root=data_path,
-                                                     filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and
-                                                                           len(vars(x)['trg']) <= MAX_LEN)
 
-if args.data == 'multi30k':
-    data_path = '.data' if args.run_local else '/yoav_stg/gshalev/semantic_labeling/Multi30k'
-    train_data, valid_data, test_data = Multi30k.splits(exts=('.de', '.en'), fields=(SRC, TRG), root=data_path)
-
-if args.data == 'iwslt':
-    MAX_LEN = 50
-    data_path = '.data' if args.run_local else '/yoav_stg/gshalev/semantic_labeling/IWSLT'
-    train_data, valid_data, test_data = IWSLT.splits(exts=('.de', '.en'), fields=(SRC, TRG), root=data_path,
-                                                     filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and
-                                                                          len(vars(x)['trg']) <= MAX_LEN)
-
-
+data_path = '.data' if args.run_local else '/yoav_stg/gshalev/semantic_labeling/Multi30k'
+train_data, valid_data, test_data = Multi30k.splits(exts=('.de', '.en'), fields=(SRC, TRG), root=data_path)
 print('completed: train_data, valid_data, test_data')
 
 SRC.build_vocab(train_data, min_freq=2)
@@ -357,7 +333,7 @@ ENC_DROPOUT = 0.5
 DEC_DROPOUT = 0.5
 SRC_PAD_IDX = SRC.vocab.stoi[SRC.pad_token]
 
-representations = get_embeddings(512, OUTPUT_DIM, args)
+representations = get_embeddings(512, 5893, args)
 if args.fixed:
     requires_grad = False
 else:
@@ -368,7 +344,6 @@ enc = Encoder(INPUT_DIM, ENC_EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, ENC_DROPOUT)
 dec = Decoder(OUTPUT_DIM, DEC_EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, DEC_DROPOUT, attn, representations, requires_grad)
 
 model = Seq2Seq(enc, dec, SRC_PAD_IDX, device)
-# model = nn.DataParallel(model)
 model.to(device)
 
 #model.apply(init_weights)
@@ -437,8 +412,8 @@ while True:
         epochs_since_improvement += 1
 
     print(f'Epoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s')
-    print(f'\tTrain Loss: {train_loss:.3f} ')
-    print(f'\t Val. Loss: {valid_loss:.3f} ')
+    print(f'\tTrain Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
+    print(f'\t Val. Loss: {valid_loss:.3f} |  Val. PPL: {math.exp(valid_loss):7.3f}')
 
     if not args.run_local:
         wandb.log({"train_loss": train_loss,
@@ -464,4 +439,4 @@ while True:
 # display_attention(src, translation, attention)
 
 
-# dotproduct_train.py
+# dotproduct_train_no_attention.py
