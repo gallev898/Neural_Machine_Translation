@@ -12,25 +12,26 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchtext.data import Field, BucketIterator
-from torchtext.data.metrics import bleu_score
 from torchtext.datasets import WMT14, IWSLT
 from nltk.translate.bleu_score import corpus_bleu
 
 from torchtext.datasets import Multi30k
 
-from dotproduct_models import Seq2Seq, Decoder, Encoder, Attention, init_weights
+from dotproduct_models import Seq2Seq, Decoder, Encoder, Attention
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--runname', type=str)
+parser.add_argument('--cuda', type=int, default=0)
 parser.add_argument('--fixed', default=False, action='store_true')
+parser.add_argument('--scale', type=int, default=100)
+parser.add_argument('--s', type=int, default=1)
+parser.add_argument('--cosine', default=False, action='store_true')
+
 parser.add_argument('--normalized', default=False, action='store_true')
 parser.add_argument('--uniform', default=False, action='store_true')
-parser.add_argument('--cosine', default=False, action='store_true')
-parser.add_argument('--runname', type=str)
-parser.add_argument('--data', type=str, default='multi30k')
-parser.add_argument('--scale', type=int, default=100)
 
+parser.add_argument('--data', type=str, default='multi30k')
 parser.add_argument('--run_local', default=False, action='store_true')
-parser.add_argument('--cuda', type=int, default=0)
 parser.add_argument('--epochs', type=int, default=10)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--batch_size', type=int, default=128)
@@ -257,6 +258,7 @@ def get_embeddings(embedding_size, vocab_size, args):
                     print('NOTICE: embeddings range +-100 and normalized for fixed')
                 v = np.random.randint(low=-100, high=100, size=embedding_size)
                 v = v / np.linalg.norm(v)
+                # v *= args.s
             else:
                 if args.uniform:
                     if cls_idx == 0:
@@ -368,12 +370,11 @@ enc = Encoder(INPUT_DIM, ENC_EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, ENC_DROPOUT)
 dec = Decoder(OUTPUT_DIM, DEC_EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, DEC_DROPOUT, attn, representations, requires_grad)
 
 model = Seq2Seq(enc, dec, SRC_PAD_IDX, device)
-# model = nn.DataParallel(model)
 model.to(device)
 
 #model.apply(init_weights)
 
-print('The model has {count_parameters(model):,} trainable parameters')
+print('The model has {} trainable parameters'.format(count_parameters(model)))
 
 # optimizer.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)

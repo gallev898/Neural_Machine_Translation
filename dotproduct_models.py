@@ -174,9 +174,15 @@ class Decoder(nn.Module):
 
         out_cat = torch.cat((output, weighted, embedded), dim=1)
         out_cat = self.fc_out(out_cat)
+        representations = self.representations
+
         if args.cosine:
             out_cat = F.normalize(out_cat, dim=1, p=2)
-        prediction = torch.matmul(out_cat, self.representations)
+            representations = F.normalize(representations, dim=1, p=2)
+
+        prediction = torch.matmul(out_cat, representations)
+
+        prediction *= args.s
         # prediction = self.fc_out(out_cat)
 
         # prediction = [batch size, output dim]

@@ -8,6 +8,7 @@ import scipy.stats
 import spacy
 import torch
 from nltk.translate.bleu_score import corpus_bleu
+from nltk.translate.meteor_score import single_meteor_score
 from torchtext.data import Field, BucketIterator
 from torchtext.datasets import Multi30k
 from dotproduct_models import Seq2Seq, Decoder, Encoder, Attention
@@ -15,7 +16,10 @@ from dotproduct_models import Seq2Seq, Decoder, Encoder, Attention
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str)
 parser.add_argument('--cosine', default=False, action='store_true')
+parser.add_argument('--normalized_f_x', default=False, action='store_true')
+parser.add_argument('--s', default=1, action='store_true')
 args = parser.parse_args()
+
 
 
 def calculate_test_correlation(data, src_field, trg_field, model, device, max_len=50):
@@ -40,14 +44,14 @@ def calculate_test_correlation(data, src_field, trg_field, model, device, max_le
     f.write('{}\n'.format(pred_trgs[10]))
     f.write('{}\n'.format(pred_trgs[100]))
 
-    test_translation_lst_str_words_counter = Counter([item for sublist in pred_trgs for item in sublist])
+    test_counter = Counter([item for sublist in pred_trgs for item in sublist])
 
     word_to_index = trg_field.vocab.stoi
     words_representations = model.decoder.representations.t()
 
     freq_to_norm_to_word = []
-    for word, freq in test_translation_lst_str_words_counter.items():
-        if freq > 1000:
+    for word, freq in test_counter.items():
+        if freq > 10000:
             continue
         word_rep_idx = word_to_index[word]
         rep = words_representations[word_rep_idx]
@@ -71,32 +75,40 @@ def calculate_test_correlation(data, src_field, trg_field, model, device, max_le
 
     bleu = corpus_bleu([[x] for x in pred_trgs], [x[0] for x in trgs])
     f.write('bleu: {}\n'.format(bleu))
+    # single_meteor_score()
+    m_scores = []
+    for i in range(len(trgs)):
+        m_scores.append(single_meteor_score([' '.join(x) for x in pred_trgs][i], [' '.join(x[0]) for x in trgs][i]))
 
+    meteor_score = np.average(m_scores)
     test_spearmanr = scipy.stats.spearmanr(freq_lst_by_model, norm_lst_by_model)
     f.write('tset_spearmanr ref: {}\n'.format(test_spearmanr))
+    f.write('test_meteor_score ref: {}\n'.format(meteor_score))
 
 
-def calculate_train_correlation(data, src_field, trg_field, model, device, max_len=50):
+def calculate_train_correlation(train_data, test_data, src_field, trg_field, model, device, max_len=50):
     if not os.path.exists('results/{}'.format(args.model)):
         os.mkdir('results/{}'.format(args.model))
     f = open('results/{}/{}_train_correlation.txt'.format(args.model, args.model), 'w')
 
     all_train_trg_data = []
-    for datum in data:
+    for datum in train_data:
         trg = vars(datum)['trg']
         all_train_trg_data.append(trg)
 
     words_representations = model.decoder.representations.t()
-    train_translation_lst_str_words_counter = Counter([item for sublist in all_train_trg_data for item in sublist])
+
+    train_counter = Counter([item for sublist in all_train_trg_data for item in sublist])
     word_to_index = trg_field.vocab.stoi
 
     freq_to_norm_to_word = []
-    for word, freq in train_translation_lst_str_words_counter.items():
-        if freq > 1000:
-            continue
+    for word, freq in train_counter.items():
+        # if freq > 10000:
+        #     continue
 
         word_rep_idx = word_to_index[word]
         rep = words_representations[word_rep_idx]
+
         rep_norm = torch.norm(rep).item()
         freq_to_norm_to_word.append((freq, rep_norm, word))
 
@@ -104,8 +116,65 @@ def calculate_train_correlation(data, src_field, trg_field, model, device, max_l
     freq_lst = [x[0] for x in sorted_lst]
     norm_lst = [x[1] for x in sorted_lst]
 
+    ####
+
+    # trgs = []
+    pred_trgs = []
+
+    for datum in test_data:
+        src = vars(datum)['src']
+        trg = vars(datum)['trg']
+
+        pred_trg, _ = translate_sentence(src, src_field, trg_field, model, device, max_len)
+        pred_trg = pred_trg[:-1]
+
+        pred_trgs.append(pred_trg)
+        # trgs.append([trg])
+
+    vocabulary_usage_model = set()
+    vocab = len([vocabulary_usage_model.update(x) for x in pred_trgs])
+    print('-------------vocab: {}'.format(len(vocabulary_usage_model)))
+    test_counter = Counter([item for sublist in pred_trgs for item in sublist])
+    freq_to_norm_to_word = []
+    for word, freq in test_counter.items():
+        # if train_counter[word] > 1000:
+        #     continue
+        word_rep_idx = word_to_index[word]
+        rep = words_representations[word_rep_idx]
+        rep_norm = torch.norm(rep).item()
+
+        freq_to_norm_to_word.append((train_counter[word], rep_norm, word))
+        # freq_to_norm_to_word.append((freq, rep_norm, word))
+
+    sorted_lst = sorted(freq_to_norm_to_word, key=lambda x: x[0])
+
+    freq_lst_by_model = [x[0] for x in sorted_lst]
+    norm_lst_by_model = [x[1] for x in sorted_lst]
+
+    ####
+    # plt.clf()
+    # plt.hist(freq_lst, density=True, color='black', bins=100)
+    # plt.show()
+    # plt.clf()
+    # plt.hist(freq_lst_by_model, density=True, color='blue', bins=100)
+    # plt.show()
+    ####
+    rng = 100
+    agg_num=0
+    for i in range(0, max([x[1] for x in list(train_counter.items())]), rng):
+        num, denom = float(len(list(filter(lambda x: i<x[0]<=i+rng, list(freq_to_norm_to_word))))), len(list(filter(lambda x: i<x[1]<=i+rng, list(train_counter.items()))))
+        agg_num += num
+        if denom == 0:
+            continue
+        print('bin: {}-{}: {} {} {}'.format(i, i+rng, num, denom, num/float(denom)))
+        #print(len(list(filter(lambda x: x[1]<i, list(train_counter.items())))))
+        #print(len(list(filter(lambda x: x[0]<100, list(freq_to_norm_to_word)))))
+    print('agg num: {}'.format(agg_num))
+    print('len(test_counter): {}'.format(len(test_counter)))
+    ########
     plt.clf()
-    plt.scatter(freq_lst, norm_lst, c='pink', alpha=0.8)
+    plt.scatter(freq_lst, norm_lst, c='yellow', alpha=0.4)
+    plt.scatter(freq_lst_by_model, norm_lst_by_model, c='black', alpha=0.5)
     plt.title('reference')
     plt.xlabel('freq')
     plt.ylabel('norm')
@@ -262,5 +331,9 @@ TRG_PAD_IDX = TRG.vocab.stoi[TRG.pad_token]
 
 checkpoint = torch.load('/Users/gallevshalev/Desktop/trained_models/{}/BEST.pt'.format(args.model), map_location='cpu')
 model.load_state_dict(checkpoint['model'])
-calculate_test_correlation(test_data, SRC, TRG, model, device)
-calculate_train_correlation(train_data, SRC, TRG, model, device)
+model_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+print('model {} has {} parameters'.format(args.model,model_parameters ))
+
+# calculate_test_correlation(test_data, SRC, TRG, model, device)
+calculate_train_correlation(train_data,test_data, SRC, TRG, model, device)
